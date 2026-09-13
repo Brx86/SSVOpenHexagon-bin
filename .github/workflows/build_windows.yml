@@ -1,9 +1,7 @@
-name: CI Windows
+name: Build Windows
 
 # Trigger this workflow on push or pull request
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -15,6 +13,15 @@ jobs:
     name: Build and test (windows-latest, MSYS2 MINGW64)
     runs-on: windows-latest
 
+    # MSYS2 现在提供 CMake 4.x，它移除了对 cmake_minimum_required(VERSION <3.5)
+    # 项目的兼容性；OpenHexagon 拉取的第三方依赖（LuaJIT/zlib 等老 fork）尚未
+    # 更新。CMAKE_POLICY_VERSION_MINIMUM 是 CMake 官方为这种情况提供的开关
+    # （https://cmake.org/cmake/help/latest/variable/CMAKE_POLICY_VERSION_MINIMUM.html），
+    # 让这些老项目按 3.5 策略继续配置。放在 job 级 env 里，嵌套的 CPM/FetchContent
+    # 子进程（每个依赖一个 subbuild）也会继承它。
+    env:
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
     defaults:
       run:
         # All `run` steps execute inside the MSYS2 MINGW64 shell
@@ -25,6 +32,47 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      # 上游的 CPM 依赖用 GITHUB_REPOSITORY/GIT_TAG 固定到若干 fork 的具体 commit，
+      # 其中一些 commit 已不再位于任何分支/标签上（例如 vittorioromeo/SFML 的
+      # dacceddbd，仓库改名后只在 PR ref 里，git clone 拿不到，会报
+      # "fatal: unable to read tree"）。但 codeload 的源码包端点对这些 commit
+      # 仍然全部可用（已逐一验证返回 200），所以这里把所有 CPM 条目改写成
+      # tarball URL 方式下载，绕开 git clone。
+      - name: Patch CPM source pins (git clone -> codeload tarball)
+        shell: bash
+        run: |
+          cp CMakeLists.txt CMakeLists.txt.orig
+          awk '
+          {
+            sub(/\r$/, "")
+            if ($1 == "GITHUB_REPOSITORY") {
+              repo = $2
+              getline
+              sub(/\r$/, "")
+              if ($1 == "GIT_TAG") {
+                printf "    URL https://codeload.github.com/%s/tar.gz/%s\n", repo, $2
+                next
+              }
+              print "    GITHUB_REPOSITORY " repo
+            }
+            else if ($1 == "GIT_REPOSITORY") {
+              url = $2
+              getline
+              sub(/\r$/, "")
+              if ($1 == "GIT_TAG") {
+                gsub(/^https:\/\/github\.com\//, "", url)
+                gsub(/\.git$/, "", url)
+                printf "    URL https://codeload.github.com/%s/tar.gz/%s\n", url, $2
+                next
+              }
+              print "    GIT_REPOSITORY " url
+            }
+            print
+          }
+          ' CMakeLists.txt.orig > CMakeLists.txt
+          echo "CPM entries rewritten to codeload URLs: $(grep -c 'codeload.github.com' CMakeLists.txt)"
+          grep -B3 'codeload.github.com' CMakeLists.txt
 
       # 参考 https://www.msys2.org/docs/ci/ 与官方构建说明（Building-Instructions.md）
       # 旧版 ci_windows.yml 没有指定 msystem，默认落在 MSYS 环境（没有编译器），
@@ -40,6 +88,10 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-openal
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-flac
+            mingw-w64-x86_64-libvorbis
 
       - name: Print toolchain versions
         run: |
@@ -53,11 +105,13 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RELEASE \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DSSVOH_HEADLESS_TESTS=1 \
             -DFORCE_COLORED_OUTPUT=ON
           # 如果 RELEASE 档的 LTO 在 MinGW 下链接失败，可改用：
           # cmake -S . -B build -G Ninja \
           #   -DCMAKE_BUILD_TYPE=RELEASE \
+          #   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
           #   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF \
           #   -DSSVOH_HEADLESS_TESTS=1
 
