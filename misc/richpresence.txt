@@ -1,0 +1,11 @@
+"lang"
+{
+	"english"
+    {
+	    "tokens"
+	    {
+	    	"#InGame"	"%levelname% [x%difficultymult%] - %time%s"
+	    	"#InMenu"	"In menu"
+	    }
+    }
+}
